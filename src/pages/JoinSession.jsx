@@ -19,7 +19,12 @@ const JoinSession = () => {
   const [participants, setParticipants] = useState([]);
   const [filteredParticipants, setFilteredParticipants] = useState([]);
   const [loading, setLoading] = useState(true);
+  
+  // Limit states
   const [isFull, setIsFull] = useState(false);
+  const [isSessionFull, setIsSessionFull] = useState(false); // New state for global limit
+  const [isLocalLimitReached, setIsLocalLimitReached] = useState(false); // Distinguish local limit
+
   const [isExpired, setIsExpired] = useState(false);
   const [expiresAt, setExpiresAt] = useState(null);
   
@@ -39,7 +44,8 @@ const JoinSession = () => {
   const { toast } = useToast();
 
   const LOCAL_STORAGE_KEY = `vcf_session_submissions_${sessionId}`;
-  const SUBMISSION_LIMIT = 3;
+  const SUBMISSION_LIMIT = 3; // Personal device limit
+  const SESSION_CAPACITY = 3; // Global session limit
 
   // Check if current user is the creator of this session
   const isCreator = user && session && user.id === session.user_id;
@@ -61,7 +67,15 @@ const JoinSession = () => {
         },
         (payload) => {
           if (payload.new) {
-            setSession(prev => ({ ...prev, ...payload.new }));
+            setSession(prev => {
+              const updated = { ...prev, ...payload.new };
+              // Real-time check for session capacity
+              if ((updated.participants_count || 0) >= SESSION_CAPACITY) {
+                setIsSessionFull(true);
+                setIsFull(true);
+              }
+              return updated;
+            });
           }
         }
       )
@@ -104,7 +118,7 @@ const JoinSession = () => {
       supabase.removeChannel(sessionChannel);
       supabase.removeChannel(participantsChannel);
     };
-  }, [sessionId, isExpired, isCreator, searchQuery]);
+  }, [sessionId, isExpired, isCreator, searchQuery, SESSION_CAPACITY]);
 
   // Initial Data Fetch
   useEffect(() => {
@@ -122,8 +136,16 @@ const JoinSession = () => {
         setExpiresAt(exp);
         const now = new Date();
 
+        // Check Global Session Limit
+        if ((data.participants_count || 0) >= SESSION_CAPACITY) {
+          setIsSessionFull(true);
+          setIsFull(true);
+        }
+
+        // Check Local Device Limit
         const localSubmissions = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]');
         if (localSubmissions.length >= SUBMISSION_LIMIT) {
+          setIsLocalLimitReached(true);
           setIsFull(true);
         }
 
@@ -185,13 +207,24 @@ const JoinSession = () => {
     e.preventDefault();
     if (!session || submitting) return;
 
-    if (isFull && !editingId && !isCreator) {
-        toast({
-            variant: "destructive",
-            title: "Limit Reached",
-            description: "You have reached your limit of 3 contacts for this session."
-        });
-        return;
+    // Strict validation for both limits
+    if (!editingId && !isCreator) {
+        if (isSessionFull || (session.participants_count || 0) >= SESSION_CAPACITY) {
+             toast({
+                variant: "destructive",
+                title: "Session Full",
+                description: "This group has reached its maximum participant limit."
+            });
+            return;
+        }
+        if (isLocalLimitReached) {
+            toast({
+                variant: "destructive",
+                title: "Limit Reached",
+                description: "You have reached your limit of 3 contacts for this session."
+            });
+            return;
+        }
     }
 
     if (fullName.trim().length < 2) {
@@ -277,12 +310,22 @@ const JoinSession = () => {
             }];
             localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(newSubmissions));
             
+            // Check Local Limit after update
             if (newSubmissions.length >= SUBMISSION_LIMIT) {
+              setIsLocalLimitReached(true);
               setIsFull(true);
             }
+
              toast({ title: "Success", description: "Contact added! Redirecting to group..." });
+             
+             // FIXED REDIRECT LOGIC
              setTimeout(() => {
-                if (!isExpired) window.location.href = session.whatsapp_link;
+                if (!isExpired && session.whatsapp_link) {
+                    // Ensure absolute URL to prevent relative path issues on Netlify
+                    const targetUrl = session.whatsapp_link.trim();
+                    const absoluteUrl = targetUrl.match(/^https?:\/\//i) ? targetUrl : `https://${targetUrl}`;
+                    window.location.href = absoluteUrl;
+                }
              }, 1500);
         } else {
              // If creator adds manually, refresh list
@@ -705,9 +748,14 @@ const JoinSession = () => {
                 <div className="w-14 h-14 bg-white dark:bg-slate-950 rounded-full flex items-center justify-center mx-auto mb-4 shadow-sm border border-slate-100 dark:border-slate-800">
                    <Users className="w-7 h-7 text-slate-400" />
                 </div>
-                <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">Limit Reached</h3>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">
+                  {isSessionFull ? "Session Full" : "Limit Reached"}
+                </h3>
                 <p className="text-slate-600 dark:text-slate-400 text-sm leading-relaxed mb-4">
-                  You have added the maximum of <span className="font-semibold">3 contacts</span> from this device.
+                  {isSessionFull 
+                    ? "This session has reached its maximum participant limit."
+                    : "You have added the maximum of 3 contacts from this device."
+                  }
                 </p>
                 <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-lg p-3">
                    <p className="text-xs text-blue-700 dark:text-blue-300 font-medium">
@@ -818,3 +866,4 @@ const JoinSession = () => {
 };
 
 export default JoinSession;
+                    
